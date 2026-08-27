@@ -19,6 +19,9 @@
   });
 })();
 </script>
+<link rel="icon" href="favicon.svg" type="image/svg+xml" />
+<link rel="icon" href="favicon.ico" sizes="32x32" />
+<link rel="apple-touch-icon" href="apple-touch-icon.png" />
 <link rel="stylesheet" href="scylladb-ds.css" />
 <style>
   /* ---------- bridge: local aliases -> ScyllaDB DS tokens ----------
@@ -424,6 +427,9 @@
   .controls .btn { font-size: 0.95em; }
   .btn-run { min-width: 8.5em; }
   .controls .spacer { flex: 1 1 auto; }
+  /* the driver radios sit on the control row, so they follow its type scale */
+  #driverGroup .radio { font-size: 0.85em; white-space: nowrap; align-items: center; }
+  #driverGroup .radio-dot { margin-top: 0; }
   .controls input[type="range"] { width: 8em; }
   .speedval { font-family: var(--font-mono); font-size: 0.85em; color: var(--accent); font-weight: 700; min-width: 2.6em; }
 
@@ -546,6 +552,20 @@
     <button type="button" class="btn btn--sm btn--primary btn-run" id="btnSelect" title="Run the read path (S)">SELECT</button>
     <button type="button" class="btn btn--sm" id="btnReset" title="Reset the data (R)">Reset</button>
 
+    <div class="cgroup" id="driverGroup" role="radiogroup" aria-label="Client driver">
+      <span class="glabel">Driver</span>
+      <label class="radio">
+        <input type="radio" name="driver" value="basic" checked />
+        <span class="radio-dot"></span>
+        <span>Non-smart</span>
+      </label>
+      <label class="radio">
+        <input type="radio" name="driver" value="smart" />
+        <span class="radio-dot"></span>
+        <span>Smart</span>
+      </label>
+    </div>
+
     <div class="spacer"></div>
 
     <div class="cgroup">
@@ -615,9 +635,25 @@ function replicasFor(key) {
   return Array.from({ length: RF }, (_, k) => (start + k) % NODE_COUNT);
 }
 // Prefer a coordinator that owns none of the data, so every hop in the story is visible.
-function pickCoordinator(base, view) {
+// Where the client sends the request. A non-smart driver has no idea which node owns
+// what, so it picks one that happens to own nothing relevant and that node has to forward
+// everything — the extra hop this demo is mostly about. A smart (token-aware) driver
+// hashes the partition key itself and lands directly on a replica, which then coordinates
+// its own request. `smartTarget` is the node such a driver would compute.
+function pickCoordinator(base, view, smartTarget) {
+  if (state.smart && smartTarget != null) return smartTarget;
   for (let i = 0; i < NODE_COUNT; i++) if (!base.includes(i) && !view.includes(i)) return i;
   return (base[0] + RF) % NODE_COUNT;
+}
+
+// When the driver has already landed on the node that owns the data, the coordinator hop
+// and its reply are not network traffic at all — they happen inside the one node.
+function routeOut(from, to, opts) {
+  const o = opts || {};
+  return from === to ? selfLoop(to, o.label, o.dur, o.cls) : hop(from, to, o);
+}
+function routeBack(from, to, opts) {
+  return from === to ? Promise.resolve() : hop(from, to, opts || {});
 }
 
 /* ------------------------------------------------------------------ the data */
@@ -647,6 +683,7 @@ const state = {
   gen: 0,
   busy: false,
   speed: 1,
+  smart: false,       // token-aware driver? off by default: the extra hop is the point
   where: {},
   hits: new Set(),      // ids of base rows the last query returned
   vhits: new Set(),     // keys of view rows the last query matched
@@ -1063,13 +1100,14 @@ function hop(from, to, opts) {
 }
 
 // A view update that never leaves the node it started on — the whole point of a local index.
-function selfLoop(n, label, dur) {
+function selfLoop(n, label, dur, cls) {
+  const c = cls || "v";
   const cx = n.x + n.hw + 2, cy = n.y - n.hh - 2, r = 16;
   return new Promise((resolve) => {
     const d = `M ${cx} ${cy - r} A ${r} ${r} 0 1 1 ${cx - 0.1} ${cy - r}`;
-    const path = el("path", { class: "msg-line v", d, "marker-end": "url(#arrowV)" }, messagesLayer);
+    const path = el("path", { class: "msg-line " + c, d, "marker-end": `url(#arrow${c.toUpperCase()})` }, messagesLayer);
     const total = path.getTotalLength();
-    const dot = el("circle", { class: "packet v", r: 5 }, messagesLayer);
+    const dot = el("circle", { class: "packet " + c, r: 5 }, messagesLayer);
     let lab = null;
     if (label) { lab = el("text", { class: "local-badge", x: cx + 26, y: cy - r - 6 }, messagesLayer); lab.textContent = label; }
     const start = performance.now();
@@ -1125,7 +1163,7 @@ async function runInsert() {
 
   const baseR = replicasFor(row.chip);
   const viewR = m.viewCols ? replicasFor(m.viewKeyOf(row)) : [];
-  const coord = pickCoordinator(baseR, viewR);
+  const coord = pickCoordinator(baseR, viewR, baseR[0]);
 
   setActiveStmt("insert");
   paintRoles(coord, baseR, viewR);
@@ -1139,7 +1177,7 @@ async function runInsert() {
   setBusyNode(coord, true);
   await Promise.all(baseR.map((r, k) => (async () => {
     await sleep(k * 90);
-    await hop(NODES[coord], NODES[r], { cls: "w", label: k === 0 ? "② base write" : "", bow: (k - 1) * 22 });
+    await routeOut(NODES[coord], NODES[r], { cls: "w", label: k === 0 ? "② base write" : "", bow: (k - 1) * 22 });
   })()));
   if (stale()) return;
 
@@ -1196,14 +1234,14 @@ async function runSelect() {
 // One hop out, one hop back. The view is a table; you read it like a table.
 async function readMv(stale, m, w) {
   const viewR = replicasFor(w.owner);
-  const coord = pickCoordinator([], viewR);
+  const coord = pickCoordinator([], viewR, viewR[0]);
   paintRoles(coord, [], viewR);
   renderBase(); renderView();
 
   await hop(CLIENT, NODES[coord], { cls: "r", label: "① SELECT … by owner", bow: 30 });
   if (stale()) return;
   setBusyNode(coord, true);
-  await hop(NODES[coord], NODES[viewR[0]], { cls: "r", label: "② read the view", bow: 26 });
+  await routeOut(NODES[coord], NODES[viewR[0]], { cls: "r", label: "② read the view", bow: 26 });
   if (stale()) return;
 
   setBusyNode(viewR[0], true);
@@ -1212,7 +1250,7 @@ async function readMv(stale, m, w) {
   await sleep(220);
   if (stale()) return;
 
-  await hop(NODES[viewR[0]], NODES[coord], { cls: "r", label: "③ full rows", bow: -26 });
+  await routeBack(NODES[viewR[0]], NODES[coord], { cls: "r", label: "③ full rows", bow: -26 });
   if (stale()) return;
   await hop(NODES[coord], CLIENT, { cls: "r", label: "", bow: -30 });
 }
@@ -1222,14 +1260,14 @@ async function readGsi(stale, m, w, matched) {
   const idxR = replicasFor(w.owner);
   const chips = uniq(matched.map((r) => r.chip));
   const baseTargets = uniq(chips.map((c) => replicasFor(c)[0]));
-  const coord = pickCoordinator(baseTargets, idxR);
+  const coord = pickCoordinator(baseTargets, idxR, idxR[0]);
   paintRoles(coord, baseTargets, idxR);
   renderBase(); renderView();
 
   await hop(CLIENT, NODES[coord], { cls: "r", label: "① SELECT … WHERE owner = …", bow: 30 });
   if (stale()) return;
   setBusyNode(coord, true);
-  await hop(NODES[coord], NODES[idxR[0]], { cls: "v", label: "② read the index", bow: 26 });
+  await routeOut(NODES[coord], NODES[idxR[0]], { cls: "v", label: "② read the index", bow: 26 });
   if (stale()) return;
 
   setBusyNode(idxR[0], true);
@@ -1238,13 +1276,13 @@ async function readGsi(stale, m, w, matched) {
   await sleep(220);
   if (stale()) return;
 
-  await hop(NODES[idxR[0]], NODES[coord], { cls: "v", label: "③ base keys", bow: -26 });
+  await routeBack(NODES[idxR[0]], NODES[coord], { cls: "v", label: "③ base keys", bow: -26 });
   if (stale()) return;
 
   // 4. one request per matching base partition — the extra hop a global index always costs
   await Promise.all(baseTargets.map((t, k) => (async () => {
     await sleep(k * 90);
-    await hop(NODES[coord], NODES[t], { cls: "r", label: k === 0 ? "④ read the base rows" : "", bow: (k - 1) * 22 });
+    await routeOut(NODES[coord], NODES[t], { cls: "r", label: k === 0 ? "④ read the base rows" : "", bow: (k - 1) * 22 });
   })()));
   if (stale()) return;
 
@@ -1259,14 +1297,18 @@ async function readGsi(stale, m, w, matched) {
 // Index rows and base rows share a partition key, so one replica answers the whole query.
 async function readLsi(stale, m, w, matched) {
   const baseR = replicasFor(w.pet_chip_id);
-  const coord = pickCoordinator(baseR, baseR);
+  const coord = pickCoordinator(baseR, baseR, baseR[0]);
   paintRoles(coord, baseR, baseR);
   renderBase(); renderView();
 
   await hop(CLIENT, NODES[coord], { cls: "r", label: "① SELECT … same partition", bow: 30 });
   if (stale()) return;
   setBusyNode(coord, true);
-  await hop(NODES[coord], NODES[baseR[0]], { cls: "r", label: "② one replica, one hop", bow: 26 });
+  // A smart driver is already on that replica; the selfLoop just below says "all local",
+  // so there is nothing to draw here rather than two loops on the same node in a row.
+  if (coord !== baseR[0]) {
+    await hop(NODES[coord], NODES[baseR[0]], { cls: "r", label: "② one replica, one hop", bow: 26 });
+  }
   if (stale()) return;
 
   setBusyNode(baseR[0], true);
@@ -1279,7 +1321,7 @@ async function readLsi(stale, m, w, matched) {
   renderBase();
   await sleep(220);
   if (stale()) return;
-  await hop(NODES[baseR[0]], NODES[coord], { cls: "r", label: "③ rows", bow: -26 });
+  await routeBack(NODES[baseR[0]], NODES[coord], { cls: "r", label: "③ rows", bow: -26 });
   if (stale()) return;
   await hop(NODES[coord], CLIENT, { cls: "r", label: "", bow: -30 });
 }
@@ -1357,6 +1399,19 @@ $("speed").addEventListener("input", (e) => {
   $("speedVal").textContent = state.speed.toFixed(state.speed < 1 ? 2 : 1) + "×";
 });
 
+// Changing driver only affects where the *next* request is sent; a run in flight keeps
+// the coordinator it already picked.
+$("driverGroup").addEventListener("change", (e) => {
+  if (e.target.name !== "driver") return;
+  state.smart = e.target.value === "smart";
+});
+
+function setDriver(smart) {
+  state.smart = smart;
+  const sel = $("driverGroup").querySelector('input[value="' + (smart ? "smart" : "basic") + '"]');
+  if (sel) sel.checked = true;
+}
+
 $("btnTheme").addEventListener("click", () => {
   const KEY = "scylladb-ds-theme";
   const order = ["system", "light", "dark"];
@@ -1374,6 +1429,7 @@ document.addEventListener("keydown", (e) => {
   else if (k === "i") { $("btnInsert").click(); e.preventDefault(); }
   else if (k === "s") { $("btnSelect").click(); e.preventDefault(); }
   else if (k === "r") { reset(); e.preventDefault(); }
+  else if (k === "d") { setDriver(!state.smart); e.preventDefault(); }
 });
 
 renderModes();
