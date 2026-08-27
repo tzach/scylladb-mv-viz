@@ -49,7 +49,10 @@ hash where murmur3 would be, and short readable keys instead of UUIDs.
 
 ## Using it
 
-Static and dependency-free — open `index.html` in a browser. No build step, no server.
+**Live: [tzach.github.io/scylladb-mv-viz](https://tzach.github.io/scylladb-mv-viz/)**
+
+Static and dependency-free — open `index.html` in a browser, or clone and open it locally.
+No build step, no server.
 
 | Key | Action |
 | --- | --- |
