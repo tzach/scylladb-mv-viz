@@ -12,6 +12,11 @@ Every mode is shown on three surfaces at once:
 - **the cluster**, where a write and a read animate hop by hop across coordinator, base
   replicas, and view replicas.
 
+![Cluster panel mid-INSERT: the client hands the write to node 4 as coordinator, with base replicas, view replicas and paired BASE + VIEW nodes marked](docs/cluster-insert.png)
+
+*Materialized View mode, step ① of the write path: node 4 is coordinating, nodes 1 and 2 hold
+both a base and a view replica, node 3 is base-only and node 6 view-only.*
+
 **Disclaimer:** An independent, educational visualization — not an official ScyllaDB product
 and not behaviorally exact. Not affiliated with or endorsed by ScyllaDB, Inc.
 
@@ -44,7 +49,10 @@ hash where murmur3 would be, and short readable keys instead of UUIDs.
 
 ## Using it
 
-Static and dependency-free — open `index.html` in a browser. No build step, no server.
+**Live: [tzach.github.io/scylladb-mv-viz](https://tzach.github.io/scylladb-mv-viz/)**
+
+Static and dependency-free — open `index.html` in a browser, or clone and open it locally.
+No build step, no server.
 
 | Key | Action |
 | --- | --- |
