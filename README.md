@@ -12,6 +12,11 @@ Every mode is shown on three surfaces at once:
 - **the cluster**, where a write and a read animate hop by hop across coordinator, base
   replicas, and view replicas.
 
+![Cluster panel mid-INSERT: the client hands the write to node 4 as coordinator, with base replicas, view replicas and paired BASE + VIEW nodes marked](docs/cluster-insert.png)
+
+*Materialized View mode, step ① of the write path: node 4 is coordinating, nodes 1 and 2 hold
+both a base and a view replica, node 3 is base-only and node 6 view-only.*
+
 **Disclaimer:** An independent, educational visualization — not an official ScyllaDB product
 and not behaviorally exact. Not affiliated with or endorsed by ScyllaDB, Inc.
 
