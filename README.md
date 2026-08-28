@@ -29,6 +29,31 @@ and not behaviorally exact. Not affiliated with or endorsed by ScyllaDB, Inc.
 | **Local Index** | `hr_local_index`, `PRIMARY KEY (pet_chip_id, heart_rate, time)` | view update never leaves the node — base and view replicas coincide | one replica answers the whole query |
 | **ALLOW FILTERING** | none | nothing at all | every node scans every partition |
 
+## Smart vs non-smart driver
+
+The **Driver** radio in the control bar changes who the client talks to first. It defaults to
+**non-smart**, because the hop it adds is most of what the cluster panel is showing.
+
+- **Non-smart** — the client has no idea which node owns which token, so it sends the request
+  to a node that happens to own nothing relevant. That node coordinates: it forwards to the
+  replicas and collects the answers. Every path pays one extra hop out and one back.
+- **Smart** (token-aware) — the client hashes the partition key itself and sends the request
+  straight to a replica that owns it. That replica coordinates its own request, so the
+  coordinator hop and its reply stop being network traffic and become work inside one node —
+  drawn as the same local loop the Local Index write path already uses.
+
+Where the smart driver lands depends on which partition the statement actually addresses:
+the base partition for an INSERT, the view for a Materialized View read, the index partition
+for a Global Index read, the base partition again for a Local Index read.
+
+Two results are worth pausing on:
+
+- **ALLOW FILTERING is unchanged.** There is no partition to route to, so knowing the ring
+  buys the client nothing — the scan still touches every node either way.
+- **A Global Index still pays its second round-trip.** The smart driver removes the hop to
+  the index, but the base-partition fetch that follows is inherent to the index, not to the
+  driver. Local Index under a smart driver is the one case where a single node does everything.
+
 Watching the same INSERT under Local Index and then Global Index is the clearest way to see
 what "local" buys: the same three nodes light up as `BASE + VIEW`, and step ③ becomes a loop
 inside each node instead of a network hop.
@@ -45,7 +70,9 @@ The derived schemas follow ScyllaDB's own construction rather than being invente
   replica, which is why the write path fans out and then pairs up rather than broadcasting.
 
 Simplifications: 6 nodes, RF=3, CL=ONE, no failures, no repair or view building, a stand-in
-hash where murmur3 would be, and short readable keys instead of UUIDs.
+hash where murmur3 would be, and short readable keys instead of UUIDs. The smart driver is
+modelled as token-awareness only — it always lands on the first replica, with no shard
+awareness, no load-based replica choice and no retry policy.
 
 ## Using it
 
@@ -60,6 +87,7 @@ No build step, no server.
 | `I` | run the write path (INSERT) |
 | `S` | run the read path (SELECT) |
 | `R` | reset the data |
+| `D` | toggle smart / non-smart driver |
 
 The **Speed** slider covers 0.25×–4×; slow it down to narrate a step, speed it up to move on.
 The **Theme** button cycles system / light / dark.
