@@ -278,6 +278,23 @@
   .stage-card .card-body { overflow: hidden; padding: 0.2em; }
   #stage { width: 100%; height: 100%; display: block; }
 
+  /* A rack (availability zone) enclosure: a lightly tinted panel behind the nodes it holds,
+     grouping them by proximity and a shared border. Deliberately colorless — on this stage
+     color already means role (base / view / coordinator) and hop type, and the DS categorical
+     chart tokens collide with those outright: --chart-1 IS --base, --chart-2 IS --view and
+     --chart-3 IS --warn. A rack is a container, not a role, so it recedes and lets the node
+     borders carry the meaning. */
+  .rack-box { fill: var(--surface-2); stroke: var(--border); stroke-width: 1.5; }
+  .rack-box-label {
+    fill: var(--text-faint);
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    text-anchor: start;
+    pointer-events: none;
+  }
+
   .node-box {
     fill: var(--surface);
     stroke: var(--border);
@@ -504,10 +521,11 @@
       <div class="card stage-card" style="flex:1 1 auto;">
         <div class="card-head">
           <h2>Cluster</h2>
-          <span class="name">6 nodes &middot; RF=3 &middot; CL=ONE</span>
+          <span class="name">6 nodes &middot; 3 racks &middot; RF=3 &middot; CL=ONE</span>
         </div>
         <div class="card-body">
-          <svg id="stage" viewBox="0 0 740 620" xmlns="http://www.w3.org/2000/svg">
+          <!-- viewBox is recomputed from the rack geometry on render; this matches it. -->
+          <svg id="stage" viewBox="0 0 600 474" xmlns="http://www.w3.org/2000/svg">
             <defs>
               <marker id="arrowW" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
                 <path class="arrow-w" d="M0,0 L10,5 L0,10 z"></path>
@@ -522,6 +540,7 @@
                 <path class="arrow-f" d="M0,0 L10,5 L0,10 z"></path>
               </marker>
             </defs>
+            <g id="racksLayer"></g>
             <g id="nodesLayer"></g>
             <g id="clientLayer"></g>
             <g id="messagesLayer"></g>
@@ -609,15 +628,64 @@ const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s).replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
 
 /* ------------------------------------------------------------------ cluster geometry */
+// The cluster is drawn as racks, not as a ring: one bordered enclosure per rack, holding the
+// nodes that share its failure domain. A ring hides the only thing that makes RF=3 worth
+// anything — that the three replicas sit in three separate racks — so the enclosure is the
+// point of the picture.
+//
+// The three enclosures sit around a triangle (right, bottom, left) with the client in the
+// middle of the top edge. That arrangement is deliberate, not decorative: it puts all six node
+// cards on a convex hull around an empty middle, which is what leaves every hop somewhere to
+// go. Plenty of straight lines between two cards still clip a third — pickBow() below bends
+// those out of the way — but on this layout there is always a clear arc to bend to. A rack
+// grid has no such room: line up two columns of three and a hop to the far column has a card
+// dead centre with open space on neither side.
 const NODE_COUNT = 6;
 const RF = 3;
-const CX = 385, CY = 332, RING = 206, NW = 124, NH = 76;
+const RACK_COUNT = 3;
 
-const NODES = Array.from({ length: NODE_COUNT }, (_, i) => {
-  const a = (-90 + i * (360 / NODE_COUNT)) * Math.PI / 180;
-  return { i, name: "node " + (i + 1), x: CX + RING * Math.cos(a), y: CY + RING * Math.sin(a), hw: NW / 2, hh: NH / 2 };
+const NW = 140, NH = 80;      // one node card
+const RACK_PAD_X = 12;        // enclosure padding beside its nodes
+const RACK_PAD_TOP = 24;      // enclosure padding above them — carries the rack label
+const RACK_PAD_BOTTOM = 12;
+const STAGE_PAD = 18;
+
+// Node centres, hand-placed. Nodes are numbered round-robin across the racks (node i is in
+// rack i % RACK_COUNT), which is how a cluster grown one node at a time across three
+// availability zones ends up numbered — and it is what makes the plain three-step ring walk in
+// replicasFor() put one replica in each rack. Numbering the racks in contiguous pairs instead
+// looks tidier in a list and is far worse here: the rack-aware walk then always prefers the
+// first node of each pair, so half the cluster never holds a replica at all.
+const NODE_XY = [
+  [500, 160],   // node 1 — rack 0, upper slot on the right
+  [221, 404],   // node 2 — rack 1, left slot along the bottom
+  [100, 160],   // node 3 — rack 2, upper slot on the left
+  [500, 258],   // node 4 — rack 0, lower slot on the right
+  [379, 404],   // node 5 — rack 1, right slot along the bottom
+  [100, 258],   // node 6 — rack 2, lower slot on the left
+];
+
+const NODES = NODE_XY.map(([x, y], i) => ({
+  i, rack: i % RACK_COUNT, name: "node " + (i + 1),
+  x, y, hw: NW / 2, hh: NH / 2,
+}));
+
+// Each enclosure is just the bounding box of the nodes it holds, padded — so moving a node
+// centre above moves its rack with it and nothing has to be kept in sync by hand.
+const RACKS = Array.from({ length: RACK_COUNT }, (_, r) => {
+  const own = NODES.filter((n) => n.rack === r);
+  const x0 = Math.min(...own.map((n) => n.x - n.hw)) - RACK_PAD_X;
+  const x1 = Math.max(...own.map((n) => n.x + n.hw)) + RACK_PAD_X;
+  const y0 = Math.min(...own.map((n) => n.y - n.hh)) - RACK_PAD_TOP;
+  const y1 = Math.max(...own.map((n) => n.y + n.hh)) + RACK_PAD_BOTTOM;
+  return { r, label: "ZONE/RACK " + r, x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
 });
-const CLIENT = { x: 88, y: 74, hw: 66, hh: 25 };
+
+const STAGE_W = Math.max(...RACKS.map((k) => k.x + k.w)) + STAGE_PAD;
+const STAGE_H = Math.max(...RACKS.map((k) => k.y + k.h)) + STAGE_PAD;
+
+// Top edge, centred between the left and right enclosures.
+const CLIENT = { x: STAGE_W / 2, y: STAGE_PAD + 26, hw: 62, hh: 26 };
 
 /* ------------------------------------------------------------------ tokens & replicas */
 // FNV-1a. Stands in for murmur3: all we need is a stable, well-spread key -> ring position.
@@ -629,10 +697,22 @@ function h32(s) {
 // What a real `token(pk)` would show: a signed 64-bit-ish number. Only its order matters here.
 function tokenOf(s) { return h32(s) | 0; }
 function ownerNode(key) { return h32(key) % NODE_COUNT; }
-// Consecutive ring ownership, the same shape SimpleStrategy produces.
+// Rack-aware ownership, the shape NetworkTopologyStrategy produces: walk the ring from the
+// token and take the next node whose rack has no replica yet, only doubling up on a rack once
+// every rack is represented (or RF is larger than the rack count). With the round-robin rack
+// numbering above a plain walk already spreads the three replicas over the three racks, so the
+// skip never has to fire at RF=3 — it is here so the guarantee is stated rather than left to
+// depend on how the nodes happen to be numbered.
 function replicasFor(key) {
   const start = ownerNode(key);
-  return Array.from({ length: RF }, (_, k) => (start + k) % NODE_COUNT);
+  const chosen = [], usedRacks = new Set(), spare = [];
+  for (let k = 0; k < NODE_COUNT && chosen.length < RF; k++) {
+    const i = (start + k) % NODE_COUNT;
+    if (usedRacks.has(NODES[i].rack)) spare.push(i);
+    else { chosen.push(i); usedRacks.add(NODES[i].rack); }
+  }
+  for (let k = 0; chosen.length < RF && k < spare.length; k++) chosen.push(spare[k]);
+  return chosen;
 }
 // Prefer a coordinator that owns none of the data, so every hop in the story is visible.
 // Where the client sends the request. A non-smart driver has no idea which node owns
@@ -984,6 +1064,8 @@ function renderWhere() {
 }
 
 /* ---------------------------------------------------------------- stage */
+const stageEl = $("stage");
+const racksLayer = $("racksLayer");
 const nodesLayer = $("nodesLayer");
 const clientLayer = $("clientLayer");
 const messagesLayer = $("messagesLayer");
@@ -996,8 +1078,22 @@ function el(tag, attrs, parent) {
 }
 
 function renderStage() {
+  // The viewBox follows the computed rack geometry, so changing a padding or a gap above moves
+  // the frame with it instead of leaving the drawing floating in a stale canvas.
+  stageEl.setAttribute("viewBox", `0 0 ${STAGE_W} ${STAGE_H}`);
+
+  racksLayer.innerHTML = "";
   nodesLayer.innerHTML = "";
   clientLayer.innerHTML = "";
+  RACKS.forEach((rk) => {
+    const g = el("g", {}, racksLayer);
+    el("rect", {
+      class: "rack-box", x: rk.x, y: rk.y, width: rk.w, height: rk.h, rx: 12, ry: 12,
+    }, g);
+    el("text", {
+      class: "rack-box-label", x: rk.x + 13, y: rk.y + 17,
+    }, g).textContent = rk.label;
+  });
   NODES.forEach((n) => {
     const g = el("g", { "data-i": n.i }, nodesLayer);
     el("rect", {
@@ -1069,13 +1165,47 @@ function edgePoint(a, tx, ty, gap) {
   return { x: a.x + dx * (s + gap / len), y: a.y + dy * (s + gap / len) };
 }
 
+// Does the arc a given bow produces stay off every node card that is not an endpoint of the
+// hop? Sampling the quadratic is enough: the cards are large and the curve is smooth.
+function arcIsClear(p1, p2, px, py, bow, skip) {
+  const cx = (p1.x + p2.x) / 2 + px * bow, cy = (p1.y + p2.y) / 2 + py * bow;
+  const PAD = 10;
+  for (let k = 1; k < 24; k++) {
+    const t = k / 24, u = 1 - t;
+    const x = u * u * p1.x + 2 * u * t * cx + t * t * p2.x;
+    const y = u * u * p1.y + 2 * u * t * cy + t * t * p2.y;
+    for (const n of NODES) {
+      if (skip.has(n.i)) continue;
+      if (Math.abs(x - n.x) < n.hw + PAD && Math.abs(y - n.y) < n.hh + PAD) return false;
+    }
+  }
+  return true;
+}
+
+// Grouping the nodes into racks packs them much closer than the old ring did, so the straight
+// line between two of them often clips a third — and an arrow drawn through an uninvolved card
+// reads as a hop to that card. The hand-tuned bow is therefore only a preference: keep it when
+// the arc is already clear, otherwise open the curve up (same side first, then the other) until
+// it is. Every hop the four modes make is clear at one of these magnitudes.
+function pickBow(p1, p2, px, py, bow, skip) {
+  const sign = bow < 0 ? -1 : 1;
+  for (const mag of [Math.abs(bow), 70, 110, 150, 190, 230]) {
+    for (const sg of [sign, -sign]) {
+      if (arcIsClear(p1, p2, px, py, mag * sg, skip)) return mag * sg;
+    }
+  }
+  return bow;
+}
+
 function hop(from, to, opts) {
   const { cls = "w", label = "", dur = HOP_MS, bow = 0 } = opts || {};
   const p1 = edgePoint(from, to.x, to.y, 6);
   const p2 = edgePoint(to, from.x, from.y, 6);
   const segLen = Math.hypot(p2.x - p1.x, p2.y - p1.y) || 1;
   const px = -(p2.y - p1.y) / segLen, py = (p2.x - p1.x) / segLen;
-  const cx = (p1.x + p2.x) / 2 + px * bow, cy = (p1.y + p2.y) / 2 + py * bow;
+  // The client has no `i`, so it simply never matches a node index here.
+  const useBow = pickBow(p1, p2, px, py, bow, new Set([from.i, to.i]));
+  const cx = (p1.x + p2.x) / 2 + px * useBow, cy = (p1.y + p2.y) / 2 + py * useBow;
 
   return new Promise((resolve) => {
     const path = el("path", { class: "msg-line " + cls, d: `M ${p1.x} ${p1.y} Q ${cx} ${cy} ${p2.x} ${p2.y}`, "marker-end": `url(#arrow${cls.toUpperCase()})` }, messagesLayer);
@@ -1102,14 +1232,18 @@ function hop(from, to, opts) {
 // A view update that never leaves the node it started on — the whole point of a local index.
 function selfLoop(n, label, dur, cls) {
   const c = cls || "v";
-  const cx = n.x + n.hw + 2, cy = n.y - n.hh - 2, r = 16;
+  // The loop hangs off whichever top corner faces the middle of the stage. Always using the
+  // right corner would push it, and its much wider label, clean off the canvas for the nodes
+  // in the right-hand rack.
+  const side = n.x < STAGE_W / 2 ? 1 : -1;
+  const cx = n.x + side * (n.hw + 2), cy = n.y - n.hh - 2, r = 16;
   return new Promise((resolve) => {
     const d = `M ${cx} ${cy - r} A ${r} ${r} 0 1 1 ${cx - 0.1} ${cy - r}`;
     const path = el("path", { class: "msg-line " + c, d, "marker-end": `url(#arrow${c.toUpperCase()})` }, messagesLayer);
     const total = path.getTotalLength();
     const dot = el("circle", { class: "packet " + c, r: 5 }, messagesLayer);
     let lab = null;
-    if (label) { lab = el("text", { class: "local-badge", x: cx + 26, y: cy - r - 6 }, messagesLayer); lab.textContent = label; }
+    if (label) { lab = el("text", { class: "local-badge", x: cx + side * 26, y: cy - r - 6 }, messagesLayer); lab.textContent = label; }
     const start = performance.now();
     const ms = (dur || HOP_MS) / state.speed;
     (function frame(now) {

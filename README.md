@@ -10,12 +10,14 @@ Every mode is shown on three surfaces at once:
 - **the base table and the table derived from it**, so the reordered primary key is visible
   rather than described,
 - **the cluster**, where a write and a read animate hop by hop across coordinator, base
-  replicas, and view replicas.
+  replicas, and view replicas, grouped into the racks they actually sit in.
 
 ![Cluster panel mid-INSERT: the client hands the write to node 4 as coordinator, with base replicas, view replicas and paired BASE + VIEW nodes marked](docs/cluster-insert.png)
 
 *Materialized View mode, step ① of the write path: node 4 is coordinating, nodes 1 and 2 hold
-both a base and a view replica, node 3 is base-only and node 6 view-only.*
+both a base and a view replica, node 3 is base-only and node 6 view-only. The three base
+replicas sit one per rack — that spread is what RF=3 is for, and the reason the nodes are drawn
+inside their racks rather than on a ring.*
 
 **Disclaimer:** An independent, educational visualization — not an official ScyllaDB product
 and not behaviorally exact. Not affiliated with or endorsed by ScyllaDB, Inc.
@@ -69,10 +71,11 @@ The derived schemas follow ScyllaDB's own construction rather than being invente
 - `db/view/view.cc` — each base replica ships its view update to one specific *paired* view
   replica, which is why the write path fans out and then pairs up rather than broadcasting.
 
-Simplifications: 6 nodes, RF=3, CL=ONE, no failures, no repair or view building, a stand-in
-hash where murmur3 would be, and short readable keys instead of UUIDs. The smart driver is
-modelled as token-awareness only — it always lands on the first replica, with no shard
-awareness, no load-based replica choice and no retry policy.
+Simplifications: 6 nodes across 3 racks, RF=3, CL=ONE, rack-aware replica placement in the
+spirit of `NetworkTopologyStrategy` but without datacenters, no failures, no repair or view
+building, a stand-in hash where murmur3 would be, and short readable keys instead of UUIDs.
+The smart driver is modelled as token-awareness only — it always lands on the first replica,
+with no shard awareness, no load-based replica choice and no retry policy.
 
 ## Using it
 
