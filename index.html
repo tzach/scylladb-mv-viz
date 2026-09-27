@@ -628,50 +628,64 @@ const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s).replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
 
 /* ------------------------------------------------------------------ cluster geometry */
-// The cluster is drawn as racks, not as a ring: one bordered enclosure per rack, holding the
-// nodes that share its failure domain. A ring hides the only thing that makes RF=3 worth
-// anything — that the three replicas sit in three separate racks — so the enclosure is the
-// point of the picture.
+// The cluster is drawn as racks, not as a ring: three enclosures side by side, each holding the
+// two nodes that share its failure domain, with the client to their left. A ring hides the only
+// thing that makes RF=3 worth anything — that the three replicas sit in three separate racks —
+// so the enclosure is the point of the picture.
 //
-// The three enclosures sit around a triangle (right, bottom, left) with the client in the
-// middle of the top edge. That arrangement is deliberate, not decorative: it puts all six node
-// cards on a convex hull around an empty middle, which is what leaves every hop somewhere to
-// go. Plenty of straight lines between two cards still clip a third — pickBow() below bends
-// those out of the way — but on this layout there is always a clear arc to bend to. A rack
-// grid has no such room: line up two columns of three and a hop to the far column has a card
-// dead centre with open space on neither side.
+// Side by side puts the nodes on a grid, and on a grid a third card often sits squarely on the
+// line between two others. Two channels of empty space keep every hop routable around that, and
+// both are sized for it rather than for looks:
+//
+//   NODE_V_GAP  a horizontal band between the upper and lower nodes, running the full width.
+//               The client sits in the middle of it, so every hop it sends starts out already
+//               inside a clear lane and only has to rise or fall at the far end. This is the
+//               binding constraint: sweeping it against every hop the four modes make, 60px
+//               leaves 26 arcs crossing a card and 76px is the first width that clears them
+//               all. It is set above that threshold rather than on it.
+//   RACK_GAP    a vertical lane between neighbouring enclosures, for hops that have to cross a
+//               rack rather than travel along the band.
+//
+// pickBow() steers each arc into one of the two, so shrinking either will start pushing arrows
+// across node cards. Three racks in a row plus a client column is simply a wide arrangement; the
+// stage is broader than it is tall and the panel letterboxes it, which is the cost of showing
+// the racks left to right.
 const NODE_COUNT = 6;
 const RF = 3;
 const RACK_COUNT = 3;
 
-const NW = 140, NH = 80;      // one node card
+const NW = 124, NH = 88;      // one node card
+const NODE_V_GAP = 96;        // band between the two nodes of a rack — an arc route
+const RACK_GAP = 44;          // lane between neighbouring enclosures — an arc route
 const RACK_PAD_X = 12;        // enclosure padding beside its nodes
 const RACK_PAD_TOP = 24;      // enclosure padding above them — carries the rack label
 const RACK_PAD_BOTTOM = 12;
-const STAGE_PAD = 18;
+const STAGE_PAD = 22;
 
-// Node centres, hand-placed. Nodes are numbered round-robin across the racks (node i is in
-// rack i % RACK_COUNT), which is how a cluster grown one node at a time across three
-// availability zones ends up numbered — and it is what makes the plain three-step ring walk in
-// replicasFor() put one replica in each rack. Numbering the racks in contiguous pairs instead
-// looks tidier in a list and is far worse here: the rack-aware walk then always prefers the
-// first node of each pair, so half the cluster never holds a replica at all.
-const NODE_XY = [
-  [500, 160],   // node 1 — rack 0, upper slot on the right
-  [221, 404],   // node 2 — rack 1, left slot along the bottom
-  [100, 160],   // node 3 — rack 2, upper slot on the left
-  [500, 258],   // node 4 — rack 0, lower slot on the right
-  [379, 404],   // node 5 — rack 1, right slot along the bottom
-  [100, 258],   // node 6 — rack 2, lower slot on the left
-];
+const RACK_W = NW + RACK_PAD_X * 2;
+const CLIENT_HW = 58, CLIENT_HH = 25;
+const CLIENT_MARGIN = 44;     // between the client and the first enclosure
+const RACKS_X = STAGE_PAD + CLIENT_HW * 2 + CLIENT_MARGIN;
 
-const NODES = NODE_XY.map(([x, y], i) => ({
-  i, rack: i % RACK_COUNT, name: "node " + (i + 1),
-  x, y, hw: NW / 2, hh: NH / 2,
-}));
+// Nodes are numbered round-robin across the racks (node i is in rack i % RACK_COUNT), which is
+// how a cluster grown one node at a time across three availability zones ends up numbered — and
+// it is what makes the plain three-step ring walk in replicasFor() put one replica in each rack.
+// Numbering the racks in contiguous pairs instead looks tidier in a list and is far worse here:
+// the rack-aware walk then always prefers the first node of each pair, so half the cluster never
+// holds a replica at all.
+const NODES = Array.from({ length: NODE_COUNT }, (_, i) => {
+  const rack = i % RACK_COUNT;
+  const slot = Math.floor(i / RACK_COUNT);
+  return {
+    i, rack, name: "node " + (i + 1),
+    x: RACKS_X + rack * (RACK_W + RACK_GAP) + RACK_PAD_X + NW / 2,
+    y: STAGE_PAD + RACK_PAD_TOP + slot * (NH + NODE_V_GAP) + NH / 2,
+    hw: NW / 2, hh: NH / 2,
+  };
+});
 
-// Each enclosure is just the bounding box of the nodes it holds, padded — so moving a node
-// centre above moves its rack with it and nothing has to be kept in sync by hand.
+// Each enclosure is just the bounding box of the nodes it holds, padded — so changing a gap
+// above moves the racks with it and nothing has to be kept in sync by hand.
 const RACKS = Array.from({ length: RACK_COUNT }, (_, r) => {
   const own = NODES.filter((n) => n.rack === r);
   const x0 = Math.min(...own.map((n) => n.x - n.hw)) - RACK_PAD_X;
@@ -684,8 +698,12 @@ const RACKS = Array.from({ length: RACK_COUNT }, (_, r) => {
 const STAGE_W = Math.max(...RACKS.map((k) => k.x + k.w)) + STAGE_PAD;
 const STAGE_H = Math.max(...RACKS.map((k) => k.y + k.h)) + STAGE_PAD;
 
-// Top edge, centred between the left and right enclosures.
-const CLIENT = { x: STAGE_W / 2, y: STAGE_PAD + 26, hw: 62, hh: 26 };
+// Left of the racks, centred on the band between the two node rows.
+const CLIENT = {
+  x: STAGE_PAD + CLIENT_HW,
+  y: (NODES[0].y + NODES[RACK_COUNT].y) / 2,
+  hw: CLIENT_HW, hh: CLIENT_HH,
+};
 
 /* ------------------------------------------------------------------ tokens & replicas */
 // FNV-1a. Stands in for murmur3: all we need is a stable, well-spread key -> ring position.
@@ -1182,14 +1200,19 @@ function arcIsClear(p1, p2, px, py, bow, skip) {
   return true;
 }
 
-// Grouping the nodes into racks packs them much closer than the old ring did, so the straight
-// line between two of them often clips a third — and an arrow drawn through an uninvolved card
-// reads as a hop to that card. The hand-tuned bow is therefore only a preference: keep it when
-// the arc is already clear, otherwise open the curve up (same side first, then the other) until
-// it is. Every hop the four modes make is clear at one of these magnitudes.
+// Racks put the nodes on a grid, and on a grid a third card often sits squarely on the straight
+// line between two others — an arrow drawn through an uninvolved card reads as a hop to that
+// card. The hand-tuned bow is therefore only a preference: keep it when the arc is already
+// clear, otherwise open the curve up (same side first, then the other) until it steers into one
+// of the empty lanes the layout leaves for exactly this. Note the candidates go *down* as well
+// as up: sometimes the hand-tuned curve is itself what swings the arc onto a neighbouring card
+// and a straighter line is already clear, so 0 has to be on the list. The top of the range runs
+// well past half the stage because the worst case — opposite ends of the same row, or the client
+// reaching a lower node straight beneath it — needs most of a rack's width to get around the
+// card in between.
 function pickBow(p1, p2, px, py, bow, skip) {
   const sign = bow < 0 ? -1 : 1;
-  for (const mag of [Math.abs(bow), 70, 110, 150, 190, 230]) {
+  for (const mag of [Math.abs(bow), 0, 30, 50, 70, 110, 150, 190, 230, 280, 330, 390, 450]) {
     for (const sg of [sign, -sign]) {
       if (arcIsClear(p1, p2, px, py, mag * sg, skip)) return mag * sg;
     }

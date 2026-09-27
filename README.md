@@ -16,8 +16,8 @@ Every mode is shown on three surfaces at once:
 
 *Materialized View mode, step ① of the write path: node 4 is coordinating, nodes 1 and 2 hold
 both a base and a view replica, node 3 is base-only and node 6 view-only. The three base
-replicas sit one per rack — that spread is what RF=3 is for, and the reason the nodes are drawn
-inside their racks rather than on a ring.*
+replicas sit one per rack — that spread is what RF=3 is for, and the reason the racks are drawn
+side by side rather than the nodes on a ring.*
 
 **Disclaimer:** An independent, educational visualization — not an official ScyllaDB product
 and not behaviorally exact. Not affiliated with or endorsed by ScyllaDB, Inc.
